@@ -1,0 +1,32 @@
+# STM32CubeMX
+*.bak
+
+# MDK-ARM build output
+MDK-ARM/*.dep
+MDK-ARM/*.d
+MDK-ARM/*.crf
+MDK-ARM/*.o
+MDK-ARM/*.lst
+MDK-ARM/*.htm
+MDK-ARM/*.map
+MDK-ARM/*.axf
+MDK-ARM/*.tra
+MDK-ARM/*.bin
+MDK-ARM/*.hex
+MDK-ARM/*.lnp
+MDK-ARM/*.sct
+MDK-ARM/*.ld
+MDK-ARM/RTE/
+MDK-ARM/DebugConfig/
+MDK-ARM/Listings/
+MDK-ARM/Objects/
+MDK-ARM/SBUS.uvguix.*
+
+# IDE
+*.uvoptx
+*.uvguix.*
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
