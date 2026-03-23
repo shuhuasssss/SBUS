@@ -22,6 +22,8 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stm32f4xx_hal.h"
+#include "sbus.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,7 +59,8 @@
 /* External variables --------------------------------------------------------*/
 
 /* USER CODE BEGIN EV */
-
+extern UART_HandleTypeDef huart1;
+extern DMA_HandleTypeDef  hdma_usart1_rx;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -199,5 +202,25 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+
+/**
+ * @brief DMA2 Stream2 interrupt — USART1 RX
+ */
+void DMA2_Stream2_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_usart1_rx);
+}
+
+/**
+ * @brief USART1 global interrupt — IDLE line detection
+ */
+void USART1_IRQHandler(void)
+{
+  /* Let SBUS module handle IDLE */
+  sbus_idle_handler(&huart1, &hdma_usart1_rx);
+
+  /* Let HAL handle other UART interrupts (TX complete, etc.) */
+  HAL_UART_IRQHandler(&huart1);
+}
 
 /* USER CODE END 1 */

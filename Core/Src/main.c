@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "sbus.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -91,12 +91,21 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  /* Start SBUS receiver (DMA circular + IDLE interrupt) */
+  sbus_init(&huart1);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* Read latest RC data — use however you need */
+    const RC_ctrl_t *rc = sbus_get_rc();
+
+    /* Example: rc->Ch1 ~ -1024..+1024 */
+    /* rc->SA, rc->SB ... are switch positions */
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
