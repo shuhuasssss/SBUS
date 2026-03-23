@@ -1,8 +1,63 @@
 /**
  * @file  sbus.c
- * @brief SBUS protocol receiver — DMA circular + IDLE interrupt
+ * @brief SBUS 协议接收模块 — DMA 循环接收 + IDLE 中断
  *
- * Robustness features:
+ * ========================================
+ *  使用说明
+ * ========================================
+ *
+ * 1. 初始化（main.c 中调用一次）
+ *
+ *    sbus_init(&huart1);
+ *
+ * 2. 读取遥控器数据（随时调用，返回值拷贝，中断安全）
+ *
+ *    RC_ctrl_t rc = sbus_get_rc();
+ *    int16_t left_x  = rc.Ch1;   // 左摇杆 左右   -1024 ~ +1023
+ *    int16_t left_y  = rc.Ch2;   // 左摇杆 前后   -1024 ~ +1023
+ *    int16_t right_y = rc.Ch3;   // 右摇杆 前后   -1024 ~ +1023
+ *    int16_t right_x = rc.Ch4;   // 右摇杆 左右   -1024 ~ +1023
+ *    int16_t sw_a    = rc.SA;    // 三段开关 A
+ *    int16_t sw_b    = rc.SB;    // 三段开关 B
+ *    // SC SD SE SF SG SH — 其余开关
+ *    // LD RD — 左右拨轮
+ *    // LS RS — 左右滑块
+ *
+ * 3. 检测连接状态（推荐在读数据前判断）
+ *
+ *    if (sbus_is_connected()) {
+ *        // 遥控器在线，正常使用 rc.Ch1 等
+ *    } else {
+ *        // 遥控器断开，建议归零或停车
+ *    }
+ *
+ * 4. 完整示例
+ *
+ *    sbus_init(&huart1);
+ *
+ *    while (1) {
+ *        RC_ctrl_t rc = sbus_get_rc();
+ *
+ *        if (sbus_is_connected()) {
+ *            motor_speed = rc.Ch3 * 4;
+ *        } else {
+ *            motor_speed = 0;
+ *        }
+ *
+ *        HAL_Delay(5);
+ *    }
+ *
+ * 5. 注意事项
+ *
+ *    - sbus_get_rc() 返回值拷贝，不需要加 volatile 或关中断
+ *    - 遥控器断开 60ms 后自动归零（可通过 SBUS_TIMEOUT_MS 宏修改）
+ *    - 中断处理已在 stm32f4xx_it.c 中配置好，用户不需要改动
+ *    - 默认校验帧尾 0x00；DJI 等变种协议可在 sbus.h 中
+ *      定义 SBUS_STRICT_TAIL 为 0 来跳过帧尾校验
+ *
+ * ========================================
+ *
+ *  Robustness features:
  *  - Frame head + tail validation (tail check configurable)
  *  - Failsafe / frame-lost flag parsing
  *  - Failsafe timeout (auto-clear all channels on signal loss)
