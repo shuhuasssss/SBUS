@@ -3,12 +3,16 @@
  * @brief SBUS protocol receiver — DMA circular + IDLE interrupt
  *
  * Robustness features:
- *  - Frame head + tail validation
+ *  - Frame head + tail validation (tail check configurable)
  *  - Failsafe / frame-lost flag parsing
- *  - Failsafe timeout (auto-clear channels on signal loss)
- *  - State machine bounds check + re-sync on bad frame
+ *  - Failsafe timeout (auto-clear all channels on signal loss)
+ *  - IRQ-safe data access (disable IRQ around reads)
+ *  - State machine bounds check
+ *  - DMA error recovery
+ *  - Parser state reset on re-init
  */
 #include "sbus.h"
+#include <string.h>
 
 /* ---- DMA handle ---- */
 DMA_HandleTypeDef hdma_usart1_rx;
@@ -19,26 +23,30 @@ static uint8_t sbus_rx_buf[SBUS_RX_BUF_NUM];
 /* ---- Frame reassembly state machine ---- */
 enum { SBUS_WAIT_START, SBUS_IN_FRAME };
 static uint8_t  frame[25];
-static uint8_t  frame_idx;
-static uint8_t  sbus_state;
+static volatile uint8_t frame_idx;
+static volatile uint8_t sbus_state;
 
-/* ---- Parsed result ---- */
-static RC_ctrl_t rc_ctrl;
+/* ---- Parsed result (written by ISR, read by main loop) ---- */
+static volatile RC_ctrl_t rc_ctrl;
 
-/* ---- Failsafe timeout ---- */
-static volatile uint32_t sbus_last_tick;   /* HAL_GetTick() of last valid frame */
-#define SBUS_TIMEOUT_MS  100               /* no frame for 100ms = disconnect */
+/* ---- Connection tracking ---- */
+static volatile uint32_t sbus_last_tick;
+
+/* ---- DMA NDTR tracking ---- */
+static uint16_t last_ndtr;
 
 /* ============================================================ */
 /*  Bit-unpack one 25-byte SBUS frame                           */
 /* ============================================================ */
-static void sbus_to_rc(const uint8_t *buf, RC_ctrl_t *rc)
+static void sbus_to_rc(const uint8_t *buf, volatile RC_ctrl_t *rc)
 {
-    /* Validate frame head and tail */
-    if (buf[0] != SBUS_FRAME_HEAD || buf[24] != SBUS_FRAME_TAIL)
+    /* Validate frame head; tail check optional for DJI/variant SBUS */
+    if (buf[0] != SBUS_FRAME_HEAD)
         return;
-
-    rc->Start = buf[0];
+#if SBUS_STRICT_TAIL
+    if (buf[24] != SBUS_FRAME_TAIL)
+        return;
+#endif
 
     /* Ch1 ~ Ch4 (joystick axes) */
     rc->Ch1 = (((uint16_t)buf[1]) | ((uint16_t)buf[2] << 8)) & 0x07FF;
@@ -71,10 +79,7 @@ static void sbus_to_rc(const uint8_t *buf, RC_ctrl_t *rc)
     /* Parse flags (byte 23) */
     rc->flags = buf[23];
 
-    /* Mark data as valid */
-    rc->valid = 1;
-
-    /* Update connection timestamp */
+    /* Update connection timestamp (also volatile) */
     sbus_last_tick = HAL_GetTick();
 }
 
@@ -122,6 +127,13 @@ static void sbus_parse_stream(const uint8_t *src, uint16_t len)
 
 void sbus_init(UART_HandleTypeDef *huart)
 {
+    /* Reset parser state (safe for re-init) */
+    frame_idx = 0;
+    sbus_state = SBUS_WAIT_START;
+    last_ndtr = SBUS_RX_BUF_NUM;
+    sbus_last_tick = HAL_GetTick();
+    memset((void *)&rc_ctrl, 0, sizeof(rc_ctrl));
+
     /* DMA controller clock enable */
     __HAL_RCC_DMA2_CLK_ENABLE();
 
@@ -135,7 +147,8 @@ void sbus_init(UART_HandleTypeDef *huart)
     hdma_usart1_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
     hdma_usart1_rx.Init.Mode                = DMA_CIRCULAR;
     hdma_usart1_rx.Init.Priority            = DMA_PRIORITY_HIGH;
-    hdma_usart1_rx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
+    hdma_usart1_rx.Init.FIFOMode            = DMA_FIFOMODE_ENABLE;
+    hdma_usart1_rx.Init.FIFOThreshold       = DMA_FIFO_THRESHOLD_FULL;
     if (HAL_DMA_Init(&hdma_usart1_rx) != HAL_OK)
     {
         Error_Handler();
@@ -153,9 +166,6 @@ void sbus_init(UART_HandleTypeDef *huart)
 
     /* Enable USART1 IDLE line interrupt */
     __HAL_UART_ENABLE_IT(huart, UART_IT_IDLE);
-
-    /* Initialize timestamp */
-    sbus_last_tick = HAL_GetTick();
 }
 
 void sbus_idle_handler(UART_HandleTypeDef *huart, DMA_HandleTypeDef *hdma)
@@ -164,7 +174,6 @@ void sbus_idle_handler(UART_HandleTypeDef *huart, DMA_HandleTypeDef *hdma)
     {
         __HAL_UART_CLEAR_IDLEFLAG(huart);
 
-        static uint16_t last_ndtr = SBUS_RX_BUF_NUM;
         uint16_t curr_ndtr = hdma->Instance->NDTR;
 
         /* Guard: if NDTR is out of range, reset */
@@ -194,20 +203,44 @@ void sbus_idle_handler(UART_HandleTypeDef *huart, DMA_HandleTypeDef *hdma)
     }
 }
 
-const RC_ctrl_t *sbus_get_rc(void)
+void sbus_dma_error_handler(DMA_HandleTypeDef *hdma)
 {
-    /* Failsafe: if no frame received recently, clear data */
-    if ((HAL_GetTick() - sbus_last_tick) > SBUS_TIMEOUT_MS) {
-        rc_ctrl.valid = 0;
-        rc_ctrl.Ch1 = 0;
-        rc_ctrl.Ch2 = 0;
-        rc_ctrl.Ch3 = 0;
-        rc_ctrl.Ch4 = 0;
+    if (hdma == &hdma_usart1_rx)
+    {
+        /* Abort and restart DMA on error */
+        HAL_DMA_Abort(hdma);
+
+        /* Reset parser state */
+        frame_idx = 0;
+        sbus_state = SBUS_WAIT_START;
+        last_ndtr = SBUS_RX_BUF_NUM;
+
+        /* Restart reception */
+        extern UART_HandleTypeDef huart1;
+        HAL_UART_Receive_DMA(&huart1, sbus_rx_buf, SBUS_RX_BUF_NUM);
     }
-    return &rc_ctrl;
+}
+
+RC_ctrl_t sbus_get_rc(void)
+{
+    RC_ctrl_t snapshot;
+
+    __disable_irq();
+    if ((HAL_GetTick() - sbus_last_tick) > SBUS_TIMEOUT_MS) {
+        /* Failsafe: zero everything */
+        memset((void *)&rc_ctrl, 0, sizeof(rc_ctrl));
+    }
+    snapshot = rc_ctrl;
+    __enable_irq();
+
+    return snapshot;
 }
 
 uint8_t sbus_is_connected(void)
 {
-    return rc_ctrl.valid && ((HAL_GetTick() - sbus_last_tick) <= SBUS_TIMEOUT_MS);
+    __disable_irq();
+    uint32_t elapsed = HAL_GetTick() - sbus_last_tick;
+    __enable_irq();
+
+    return (elapsed <= SBUS_TIMEOUT_MS);
 }

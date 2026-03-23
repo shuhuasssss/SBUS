@@ -100,11 +100,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* Read latest RC data — use however you need */
-    const RC_ctrl_t *rc = sbus_get_rc();
+    /* Read latest RC data — safe copy, call as often as needed */
+    RC_ctrl_t rc = sbus_get_rc();
 
-    /* Example: rc->Ch1 ~ -1024..+1024 */
-    /* rc->SA, rc->SB ... are switch positions */
+    /* Example: rc.Ch1 ~ -1024..+1024 */
+    /* rc.SA, rc.SB ... are switch positions */
 
     /* USER CODE END WHILE */
 

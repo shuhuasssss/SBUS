@@ -19,14 +19,17 @@
 #define SBUS_FLAG_FRAME_LOST  (1 << 2)  /* bit 2: frame lost */
 #define SBUS_FLAG_FAILSAFE    (1 << 3)  /* bit 3: failsafe active */
 
+/* ---- Failsafe timeout (ms) ---- */
+#ifndef SBUS_TIMEOUT_MS
+#define SBUS_TIMEOUT_MS  60
+#endif
+
 /* ---- Data structure ---- */
 typedef __packed struct {
-    int16_t Start;
     int16_t Ch1, Ch2, Ch3, Ch4;
     int16_t SA, SB, SC, SD, SE, SF, SG, SH;
     int16_t LD, RD, LS, RS;
     uint8_t flags;       /* frame lost / failsafe */
-    uint8_t valid;       /* 1 = data is fresh and valid */
 } RC_ctrl_t;
 
 /* ---- Public API ---- */
@@ -37,10 +40,13 @@ void sbus_init(UART_HandleTypeDef *huart);
 /* Called from USART1_IRQHandler — do not call directly */
 void sbus_idle_handler(UART_HandleTypeDef *huart, DMA_HandleTypeDef *hdma);
 
-/* Get pointer to latest parsed data */
-const RC_ctrl_t *sbus_get_rc(void);
+/* Called from DMA2_Stream2_IRQHandler */
+void sbus_dma_error_handler(DMA_HandleTypeDef *hdma);
 
-/* Check if RC link is alive (received valid frame recently) */
+/* Get snapshot of latest RC data (IRQ-safe copy) */
+RC_ctrl_t sbus_get_rc(void);
+
+/* Check if RC link is alive */
 uint8_t sbus_is_connected(void);
 
 #endif /* SBUS_H */

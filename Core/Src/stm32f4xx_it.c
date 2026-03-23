@@ -212,6 +212,14 @@ void DMA2_Stream2_IRQHandler(void)
 }
 
 /**
+ * @brief DMA error callback — restart reception on failure
+ */
+void HAL_DMA_ErrorCallback(DMA_HandleTypeDef *hdma)
+{
+  sbus_dma_error_handler(hdma);
+}
+
+/**
  * @brief USART1 global interrupt — IDLE line detection
  */
 void USART1_IRQHandler(void)
