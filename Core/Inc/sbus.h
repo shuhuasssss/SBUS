@@ -7,7 +7,7 @@
 #define RC_FRAME_LENGTH    25
 #define RC_CH_VALUE_OFFSET 1024u
 
-typedef struct __packed {
+typedef __packed struct {
     int16_t Start;
     int16_t Ch1, Ch2, Ch3, Ch4;
     int16_t SA, SB, SC, SD, SE, SF, SG, SH;
