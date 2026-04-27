@@ -5,32 +5,37 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
-  build-arm:
+  build:
     runs-on: ubuntu-latest
     
     steps:
+    # 1. 检出代码
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: recursive
 
+    # 2. 安装 ARM GCC 工具链
     - name: Install ARM GCC Toolchain
       run: |
         sudo apt-get update
         sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
         arm-none-eabi-gcc --version
 
+    # 3. 安装 CMake
     - name: Install CMake
       run: sudo apt-get install -y cmake
 
+    # 4. 清理并构建
     - name: Build STM32F4 Project
       run: |
         mkdir -p build
         cd build
         
+        # 导出 CMakeLists.txt（与之前相同的正确配置）
         cat > ../CMakeLists.txt << 'EOF'
 cmake_minimum_required(VERSION 3.20)
 project(SBUS LANGUAGES C)
@@ -49,13 +54,21 @@ set(SIZE ${TOOLCHAIN_PREFIX}-size)
 
 set(CPU_FLAGS "-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16")
 set(CMAKE_C_FLAGS "${CPU_FLAGS} -Wall -O0 -g3 -fdata-sections -ffunction-sections")
-set(CMAKE_EXE_LINKER_FLAGS "${CPU_FLAGS} -specs=nosys.specs -specs=nano.specs -Wl,--gc-sections")
+set(CMAKE_EXE_LINKER_FLAGS "${CPU_FLAGS} -specs=nosys.specs -specs=nano.specs -Wl,--gc-sections -nostartfiles")
 
+# 只编译核心源文件，排除模板
 file(GLOB_RECURSE SOURCES
     "Core/Src/*.c"
     "Drivers/STM32F4xx_HAL_Driver/Src/*.c"
-    "Drivers/CMSIS/*.c"
 )
+
+# 排除 timebase 和 template 文件（不编译模板）
+set(SOURCES_FINAL "")
+foreach(src ${SOURCES})
+    if(NOT (src MATCHES ".*timebase.*" OR src MATCHES ".*template.*"))
+        list(APPEND SOURCES_FINAL ${src})
+    endif()
+endforeach()
 
 file(GLOB_RECURSE HEADERS
     "Core/Inc/*.h"
@@ -71,7 +84,7 @@ include_directories(
     Drivers/CMSIS/Include
 )
 
-add_executable(${PROJECT_NAME}.elf ${SOURCES} ${HEADERS})
+add_executable(${PROJECT_NAME}.elf ${SOURCES_FINAL} ${HEADERS})
 
 add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary ${PROJECT_NAME}.elf ${PROJECT_NAME}.bin
@@ -81,27 +94,48 @@ add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
 )
 EOF
         
+        # 运行 cmake 和 make
+        echo "Running CMake..."
         cmake .. 2>&1 | tee cmake.log
+        
+        echo "Running Make..."
         make -j$(nproc) 2>&1 | tee build.log
         
-        echo "=== Build Result ==="
-        ls -lh *.elf *.bin *.hex 2>/dev/null || echo "Build failed!"
-        
+        # 检查结果
+        echo ""
+        echo "=== Build Summary ==="
         if [ -f SBUS.elf ]; then
-            echo "Build SUCCESS!"
+            echo "✅ Build SUCCESS!"
             arm-none-eabi-size SBUS.elf
+            echo ""
+            ls -lh SBUS.elf SBUS.bin SBUS.hex
         else
-            echo "Build FAILED!"
+            echo "❌ Build FAILED!"
+            echo "--- CMake Log ---"
+            cat cmake.log | grep -i error
+            echo "--- Build Log (errors) ---"
+            cat build.log | grep -i error
             exit 1
         fi
 
-    - name: Upload Artifacts
+    # 5. 上传构建产物
+    - name: Upload Firmware Artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: sbus-firmware
+        name: sbus-firmware-${{ github.sha }}
         path: |
-          build/*.elf
-          build/*.bin
-          build/*.hex
+          build/SBUS.elf
+          build/SBUS.bin
+          build/SBUS.hex
         retention-days: 30
+
+    # 6. 如果是 release 事件，自动附加到 release
+    - name: Attach to Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          build/SBUS.elf
+          build/SBUS.bin
+          build/SBUS.hex
