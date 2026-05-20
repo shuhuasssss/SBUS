@@ -72,6 +72,8 @@
 /* ---- DMA handle ---- */
 DMA_HandleTypeDef hdma_usart1_rx;
 
+volatile SBUS_Debug_t g_sbus_debug;
+
 /* ---- Receive buffer ---- */
 static uint8_t sbus_rx_buf[SBUS_RX_BUF_NUM];
 
@@ -95,12 +97,21 @@ static uint16_t last_ndtr;
 /* ============================================================ */
 static void sbus_to_rc(const uint8_t *buf, volatile RC_ctrl_t *rc)
 {
+    g_sbus_debug.frame_count++;
+    for (uint8_t i = 0; i < RC_FRAME_LENGTH; i++) {
+        g_sbus_debug.last_frame[i] = buf[i];
+    }
+
     /* Validate frame head; tail check optional for DJI/variant SBUS */
-    if (buf[0] != SBUS_FRAME_HEAD)
+    if (buf[0] != SBUS_FRAME_HEAD) {
+        g_sbus_debug.bad_head_count++;
         return;
+    }
 #if SBUS_STRICT_TAIL
-    if (buf[24] != SBUS_FRAME_TAIL)
+    if (buf[24] != SBUS_FRAME_TAIL) {
+        g_sbus_debug.bad_tail_count++;
         return;
+    }
 #endif
 
     /* Ch1 ~ Ch4 (joystick axes) */
@@ -136,6 +147,7 @@ static void sbus_to_rc(const uint8_t *buf, volatile RC_ctrl_t *rc)
 
     /* Update connection timestamp (also volatile) */
     sbus_last_tick = HAL_GetTick();
+    g_sbus_debug.valid_frame_count++;
 }
 
 /* ============================================================ */
@@ -145,10 +157,12 @@ static void sbus_parse_stream(const uint8_t *src, uint16_t len)
 {
     for (uint16_t i = 0; i < len; i++) {
         uint8_t b = src[i];
+        g_sbus_debug.parsed_bytes++;
 
         switch (sbus_state) {
             case SBUS_WAIT_START:
                 if (b == SBUS_FRAME_HEAD) {
+                    g_sbus_debug.head_count++;
                     frame[0] = b;
                     frame_idx = 1;
                     sbus_state = SBUS_IN_FRAME;
@@ -188,6 +202,7 @@ void sbus_init(UART_HandleTypeDef *huart)
     last_ndtr = SBUS_RX_BUF_NUM;
     sbus_last_tick = HAL_GetTick();
     memset((void *)&rc_ctrl, 0, sizeof(rc_ctrl));
+    memset((void *)&g_sbus_debug, 0, sizeof(g_sbus_debug));
 
     /* DMA controller clock enable */
     __HAL_RCC_DMA2_CLK_ENABLE();
@@ -202,8 +217,7 @@ void sbus_init(UART_HandleTypeDef *huart)
     hdma_usart1_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
     hdma_usart1_rx.Init.Mode                = DMA_CIRCULAR;
     hdma_usart1_rx.Init.Priority            = DMA_PRIORITY_HIGH;
-    hdma_usart1_rx.Init.FIFOMode            = DMA_FIFOMODE_ENABLE;
-    hdma_usart1_rx.Init.FIFOThreshold       = DMA_FIFO_THRESHOLD_FULL;
+    hdma_usart1_rx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
     if (HAL_DMA_Init(&hdma_usart1_rx) != HAL_OK)
     {
         Error_Handler();
@@ -220,10 +234,6 @@ void sbus_init(UART_HandleTypeDef *huart)
     HAL_NVIC_SetPriority(USART1_IRQn, 0, 1);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
 
-    /* Enable RX signal inversion — SBUS uses inverted UART (idle = low)
-       USART_CR2 bit 19 (RXINV) is not defined in this version of CMSIS headers */
-    huart->Instance->CR2 |= (1UL << 19U);
-
     /* Start circular DMA reception */
     HAL_UART_Receive_DMA(huart, sbus_rx_buf, SBUS_RX_BUF_NUM);
 
@@ -235,9 +245,12 @@ void sbus_idle_handler(UART_HandleTypeDef *huart, DMA_HandleTypeDef *hdma)
 {
     if (__HAL_UART_GET_FLAG(huart, UART_FLAG_IDLE))
     {
+        g_sbus_debug.idle_count++;
+        g_sbus_debug.last_uart_sr = (uint8_t)(huart->Instance->SR & 0xFFU);
         __HAL_UART_CLEAR_IDLEFLAG(huart);
 
         uint16_t curr_ndtr = hdma->Instance->NDTR;
+        g_sbus_debug.last_ndtr = curr_ndtr;
 
         /* Guard: if NDTR is out of range, reset */
         if (curr_ndtr > SBUS_RX_BUF_NUM) {
@@ -245,22 +258,23 @@ void sbus_idle_handler(UART_HandleTypeDef *huart, DMA_HandleTypeDef *hdma)
             return;
         }
 
+        uint16_t old_pos = SBUS_RX_BUF_NUM - last_ndtr;
         uint16_t rx_len = (last_ndtr >= curr_ndtr) ?
                           (last_ndtr - curr_ndtr) :
                           (SBUS_RX_BUF_NUM - curr_ndtr + last_ndtr);
         last_ndtr = curr_ndtr;
+        g_sbus_debug.last_old_pos = old_pos;
+        g_sbus_debug.last_rx_len = rx_len;
 
         /* Guard: skip if nothing received */
         if (rx_len == 0 || rx_len > SBUS_RX_BUF_NUM)
             return;
 
-        uint16_t tail = SBUS_RX_BUF_NUM - curr_ndtr;
-
-        if (tail + rx_len <= SBUS_RX_BUF_NUM) {
-            sbus_parse_stream(&sbus_rx_buf[tail], rx_len);
+        if (old_pos + rx_len <= SBUS_RX_BUF_NUM) {
+            sbus_parse_stream(&sbus_rx_buf[old_pos], rx_len);
         } else {
-            uint16_t first = SBUS_RX_BUF_NUM - tail;
-            sbus_parse_stream(&sbus_rx_buf[tail], first);
+            uint16_t first = SBUS_RX_BUF_NUM - old_pos;
+            sbus_parse_stream(&sbus_rx_buf[old_pos], first);
             sbus_parse_stream(&sbus_rx_buf[0], rx_len - first);
         }
     }
@@ -270,6 +284,8 @@ void sbus_dma_error_handler(DMA_HandleTypeDef *hdma)
 {
     if (hdma == &hdma_usart1_rx)
     {
+        g_sbus_debug.dma_error_count++;
+
         /* Abort and restart DMA on error */
         HAL_DMA_Abort(hdma);
 
@@ -284,6 +300,33 @@ void sbus_dma_error_handler(DMA_HandleTypeDef *hdma)
     }
 }
 
+void sbus_uart_error_handler(UART_HandleTypeDef *huart)
+{
+    uint32_t sr = huart->Instance->SR;
+
+    if ((sr & (USART_SR_FE | USART_SR_NE | USART_SR_ORE)) == 0U) {
+        return;
+    }
+
+    g_sbus_debug.uart_error_count++;
+    g_sbus_debug.last_uart_sr = (uint8_t)(sr & 0xFFU);
+
+    HAL_UART_DMAStop(huart);
+
+    __HAL_UART_CLEAR_PEFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_OREFLAG(huart);
+
+    frame_idx = 0;
+    sbus_state = SBUS_WAIT_START;
+    last_ndtr = SBUS_RX_BUF_NUM;
+
+    memset(sbus_rx_buf, 0, sizeof(sbus_rx_buf));
+    HAL_UART_Receive_DMA(huart, sbus_rx_buf, SBUS_RX_BUF_NUM);
+    __HAL_UART_ENABLE_IT(huart, UART_IT_IDLE);
+}
+
 RC_ctrl_t sbus_get_rc(void)
 {
     RC_ctrl_t snapshot;
@@ -292,6 +335,7 @@ RC_ctrl_t sbus_get_rc(void)
     if ((HAL_GetTick() - sbus_last_tick) > SBUS_TIMEOUT_MS) {
         /* Failsafe: zero everything */
         memset((void *)&rc_ctrl, 0, sizeof(rc_ctrl));
+        g_sbus_debug.timeout_count++;
     }
     snapshot = rc_ctrl;
     __enable_irq();

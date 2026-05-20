@@ -227,6 +227,9 @@ void USART1_IRQHandler(void)
   /* Let SBUS module handle IDLE */
   sbus_idle_handler(&huart1, &hdma_usart1_rx);
 
+  /* Recover DMA reception after UART line errors */
+  sbus_uart_error_handler(&huart1);
+
   /* Let HAL handle other UART interrupts (TX complete, etc.) */
   HAL_UART_IRQHandler(&huart1);
 }
