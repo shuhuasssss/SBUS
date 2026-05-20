@@ -333,8 +333,6 @@ RC_ctrl_t sbus_get_rc(void)
 
     __disable_irq();
     if ((HAL_GetTick() - sbus_last_tick) > SBUS_TIMEOUT_MS) {
-        /* Failsafe: zero everything */
-        memset((void *)&rc_ctrl, 0, sizeof(rc_ctrl));
         g_sbus_debug.timeout_count++;
     }
     snapshot = rc_ctrl;
