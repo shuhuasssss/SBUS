@@ -44,6 +44,9 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
+/* Global SBUS data — watch in Keil debug: g_rc.Ch1, g_rc.Ch2, ... */
+RC_ctrl_t g_rc;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -101,10 +104,10 @@ int main(void)
   while (1)
   {
     /* Read latest RC data — safe copy, call as often as needed */
-    RC_ctrl_t rc = sbus_get_rc();
+    g_rc = sbus_get_rc();
 
-    /* Example: rc.Ch1 ~ -1024..+1024 */
-    /* rc.SA, rc.SB ... are switch positions */
+    /* Add g_rc to Keil watch window to see all channels in real-time */
+    /* g_rc.Ch1 ~ -1024..+1024, g_rc.SA, g_rc.SB ... switch positions */
 
     /* USER CODE END WHILE */
 

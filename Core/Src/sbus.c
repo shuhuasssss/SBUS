@@ -216,6 +216,14 @@ void sbus_init(UART_HandleTypeDef *huart)
     HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
+    /* Enable USART1 global interrupt (for IDLE detection) */
+    HAL_NVIC_SetPriority(USART1_IRQn, 0, 1);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
+
+    /* Enable RX signal inversion — SBUS uses inverted UART (idle = low)
+       USART_CR2 bit 19 (RXINV) is not defined in this version of CMSIS headers */
+    huart->Instance->CR2 |= (1UL << 19U);
+
     /* Start circular DMA reception */
     HAL_UART_Receive_DMA(huart, sbus_rx_buf, SBUS_RX_BUF_NUM);
 
